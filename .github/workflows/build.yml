@@ -122,6 +122,9 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd lsquic
+          # lsquic 在 Windows 硬编码 /WX(warning-as-error)，新版 MSVC 的 C5286(enum 隐式转换)
+          # 会把告警当错误。用 EXTRA_CFLAGS 追加 /WX- 关掉（CMakeLists 把 EXTRA_CFLAGS 拼在 -WX 之后）。
+          $env:EXTRA_CFLAGS = "/WX- /wd5286"
           cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF `
                 -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
                 -DLSQUIC_LIBSSL=BORINGSSL `
