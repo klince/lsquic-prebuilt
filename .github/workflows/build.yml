@@ -70,14 +70,37 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release -B build
           cmake --build build --config Release
 
-      # ----- 编 lsquic，指向刚编好的 BoringSSL -----
+      # ----- 整理 BoringSSL 产物到 lsquic 期望的布局 (LIBSSL_DIR/lib + LIBSSL_DIR/include) -----
+      # 新版 BoringSSL 库可能落在 build/ 顶层或 build/ssl|crypto/ 或 build/Release/，统一收到 lib/。
+      - name: Arrange BoringSSL libs (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p boringssl/lib
+          find boringssl/build \( -name 'libssl.a' -o -name 'libcrypto.a' \) -exec cp -f {} boringssl/lib/ \;
+          ls -l boringssl/lib
+          test -f boringssl/lib/libssl.a
+          test -f boringssl/lib/libcrypto.a
+
+      - name: Arrange BoringSSL libs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path boringssl/lib | Out-Null
+          Get-ChildItem -Recurse -Path boringssl/build -Filter ssl.lib    | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/
+          Get-ChildItem -Recurse -Path boringssl/build -Filter crypto.lib | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/
+          Get-ChildItem boringssl/lib
+
+      # ----- 编 lsquic，指向整理后的 BoringSSL；强制 BoringSSL 以跳过静态库符号检测 -----
       - name: Build lsquic (Unix)
         if: runner.os != 'Windows'
         run: |
           cd lsquic
           cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF \
                 -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF \
-                -DBORINGSSL_DIR=$GITHUB_WORKSPACE/boringssl \
+                -DLSQUIC_LIBSSL=BORINGSSL \
+                -DBORINGSSL_INCLUDE=$GITHUB_WORKSPACE/boringssl/include \
                 -DLIBSSL_DIR=$GITHUB_WORKSPACE/boringssl \
                 -B build
           cmake --build build --config Release -j
@@ -88,7 +111,8 @@ jobs:
           cd lsquic
           cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF `
                 -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
-                -DBORINGSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
+                -DLSQUIC_LIBSSL=BORINGSSL `
+                -DBORINGSSL_INCLUDE="$env:GITHUB_WORKSPACE/boringssl/include" `
                 -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
                 -B build
           cmake --build build --config Release
