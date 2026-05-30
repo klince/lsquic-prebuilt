@@ -70,7 +70,7 @@ jobs:
         run: |
           cd boringssl
           cmake -DCMAKE_BUILD_TYPE=Release -B build
-          cmake --build build --config Release
+          cmake --build build --config Release --parallel -- /m
 
       # ----- 整理 BoringSSL 产物到 lsquic 期望的布局 (LIBSSL_DIR/lib + LIBSSL_DIR/include) -----
       # 新版 BoringSSL 库可能落在 build/ 顶层或 build/ssl|crypto/ 或 build/Release/，统一收到 lib/。
@@ -119,7 +119,7 @@ jobs:
                 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
                 -DVCPKG_TARGET_TRIPLET=x64-windows-static `
                 -B build
-          cmake --build build --config Release
+          cmake --build build --config Release --parallel -- /m
 
       # ----- 收集产物：库 + 头文件 -----
       - name: Collect artifacts (Unix)
