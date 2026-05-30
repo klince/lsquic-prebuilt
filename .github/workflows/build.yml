@@ -1,0 +1,163 @@
+name: build-lsquic
+
+# 多平台预编译 lsquic（静态库）+ 其依赖 boringssl(libssl/libcrypto)。
+# 产物上传为 artifact，并在打 tag 时附到 GitHub Release。
+# 主项目（hook/System/3rd/lsquic）只下载这些产物，无需任何编译工具链。
+
+on:
+  push:
+    tags:
+      - 'v*'          # 打 v* tag 时构建并发 Release
+  workflow_dispatch:  # 也可手动触发（仅出 artifact，不发 Release）
+
+env:
+  # lsquic 子模块已固定在 v4.7.1（见仓库 .gitmodules / submodule commit）
+  # boringssl 版本跟随 lsquic README 推荐的稳定版本
+  BORINGSSL_REF: '0.20250807.0'
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+          - os: macos-13          # Intel
+            name: macos-x64
+          - os: macos-14          # Apple Silicon
+            name: macos-arm64
+          - os: windows-latest
+            name: windows-x64
+
+    steps:
+      - name: Checkout (with lsquic submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go (required by BoringSSL)
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      # ----- Windows 专用前置：NASM（boringssl 汇编）+ Perl -----
+      - name: Install Windows build prerequisites
+        if: runner.os == 'Windows'
+        run: |
+          choco install nasm strawberryperl -y --no-progress
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+
+      # ----- 拉取并固定 BoringSSL 版本 -----
+      - name: Clone BoringSSL
+        run: |
+          git clone https://boringssl.googlesource.com/boringssl boringssl
+          cd boringssl
+          git checkout ${{ env.BORINGSSL_REF }}
+
+      # ----- 编 BoringSSL（静态库 Release）-----
+      - name: Build BoringSSL (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd boringssl
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -B build
+          cmake --build build --config Release -j
+
+      - name: Build BoringSSL (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd boringssl
+          cmake -DCMAKE_BUILD_TYPE=Release -B build
+          cmake --build build --config Release
+
+      # ----- 编 lsquic，指向刚编好的 BoringSSL -----
+      - name: Build lsquic (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd lsquic
+          cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF \
+                -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF \
+                -DBORINGSSL_DIR=$GITHUB_WORKSPACE/boringssl \
+                -DLIBSSL_DIR=$GITHUB_WORKSPACE/boringssl \
+                -B build
+          cmake --build build --config Release -j
+
+      - name: Build lsquic (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd lsquic
+          cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF `
+                -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
+                -DBORINGSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
+                -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
+                -B build
+          cmake --build build --config Release
+
+      # ----- 收集产物：库 + 头文件 -----
+      - name: Collect artifacts (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="out/lsquic-${{ matrix.name }}"
+          mkdir -p "$OUT/lib" "$OUT/include"
+          # lsquic 静态库
+          find lsquic/build -name 'liblsquic.a' -exec cp {} "$OUT/lib/" \;
+          # boringssl 静态库
+          find boringssl/build -name 'libssl.a'    -exec cp {} "$OUT/lib/" \;
+          find boringssl/build -name 'libcrypto.a' -exec cp {} "$OUT/lib/" \;
+          # 头文件
+          cp -R lsquic/include/* "$OUT/include/"
+          cp -R boringssl/include/* "$OUT/include/"
+          # 版本信息
+          {
+            echo "lsquic: $(cd lsquic && git describe --tags --always)"
+            echo "boringssl: ${{ env.BORINGSSL_REF }}"
+            echo "platform: ${{ matrix.name }}"
+          } > "$OUT/VERSION.txt"
+          ( cd out && tar czf "lsquic-${{ matrix.name }}.tar.gz" "lsquic-${{ matrix.name }}" )
+
+      - name: Collect artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $OUT = "out/lsquic-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "$OUT/lib","$OUT/include" | Out-Null
+          Get-ChildItem -Recurse -Path lsquic/build    -Filter lsquic.lib | Copy-Item -Destination "$OUT/lib/"
+          Get-ChildItem -Recurse -Path boringssl/build  -Filter ssl.lib    | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
+          Get-ChildItem -Recurse -Path boringssl/build  -Filter crypto.lib | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
+          Copy-Item -Recurse -Force lsquic/include/*    "$OUT/include/"
+          Copy-Item -Recurse -Force boringssl/include/* "$OUT/include/"
+          "lsquic: ${{ matrix.name }}`r`nboringssl: ${{ env.BORINGSSL_REF }}" | Out-File -Encoding utf8 "$OUT/VERSION.txt"
+          Compress-Archive -Path "$OUT" -DestinationPath "out/lsquic-${{ matrix.name }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsquic-${{ matrix.name }}
+          path: |
+            out/lsquic-${{ matrix.name }}.tar.gz
+            out/lsquic-${{ matrix.name }}.zip
+          if-no-files-found: ignore
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/*.tar.gz
+            dist/**/*.zip
+          generate_release_notes: true
