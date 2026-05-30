@@ -41,6 +41,15 @@ jobs:
         with:
           go-version: 'stable'
 
+      # ----- Unix 前置：确保 ninja 可用（mac/Linux runner 一般已预装）-----
+      - name: Ensure Ninja (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            if [ "$(uname -s)" = "Darwin" ]; then brew install ninja; else sudo apt-get update && sudo apt-get install -y ninja-build; fi
+          fi
+          ninja --version
+
       # ----- Windows 专用前置：NASM（boringssl 汇编）+ Perl + zlib（lsquic 依赖）-----
       - name: Install Windows build prerequisites
         if: runner.os == 'Windows'
@@ -58,12 +67,14 @@ jobs:
           git checkout ${{ env.BORINGSSL_REF }}
 
       # ----- 编 BoringSSL（静态库 Release）-----
+      # 用 Ninja 生成器：默认满核并行，且 mac/Linux 行为一致
+      # （裸 `make -j` 在 mac 上可能不并行，导致 BoringSSL 编译极慢）
       - name: Build BoringSSL (Unix)
         if: runner.os != 'Windows'
         run: |
           cd boringssl
-          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -B build
-          cmake --build build --config Release -j
+          cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -B build
+          cmake --build build --config Release --parallel
 
       - name: Build BoringSSL (Windows)
         if: runner.os == 'Windows'
@@ -99,13 +110,13 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd lsquic
-          cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF \
+          cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF \
                 -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF \
                 -DLSQUIC_LIBSSL=BORINGSSL \
                 -DBORINGSSL_INCLUDE=$GITHUB_WORKSPACE/boringssl/include \
                 -DLIBSSL_DIR=$GITHUB_WORKSPACE/boringssl \
                 -B build
-          cmake --build build --config Release -j
+          cmake --build build --config Release --parallel
 
       - name: Build lsquic (Windows)
         if: runner.os == 'Windows'
