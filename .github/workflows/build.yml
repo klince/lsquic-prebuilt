@@ -41,12 +41,14 @@ jobs:
         with:
           go-version: 'stable'
 
-      # ----- Windows 专用前置：NASM（boringssl 汇编）+ Perl -----
+      # ----- Windows 专用前置：NASM（boringssl 汇编）+ Perl + zlib（lsquic 依赖）-----
       - name: Install Windows build prerequisites
         if: runner.os == 'Windows'
         run: |
           choco install nasm strawberryperl -y --no-progress
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          vcpkg install zlib:x64-windows-static
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
       # ----- 拉取并固定 BoringSSL 版本 -----
       - name: Clone BoringSSL
@@ -114,6 +116,8 @@ jobs:
                 -DLSQUIC_LIBSSL=BORINGSSL `
                 -DBORINGSSL_INCLUDE="$env:GITHUB_WORKSPACE/boringssl/include" `
                 -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
+                -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                -DVCPKG_TARGET_TRIPLET=x64-windows-static `
                 -B build
           cmake --build build --config Release
 
@@ -150,6 +154,9 @@ jobs:
           Get-ChildItem -Recurse -Path lsquic/build    -Filter lsquic.lib | Copy-Item -Destination "$OUT/lib/"
           Get-ChildItem -Recurse -Path boringssl/build  -Filter ssl.lib    | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
           Get-ChildItem -Recurse -Path boringssl/build  -Filter crypto.lib | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
+          # zlib (vcpkg static)，主项目链接 lsquic 需要
+          $zlib = Get-ChildItem -Recurse -Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/lib" -Filter zlib.lib -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($zlib) { Copy-Item -Path $zlib.FullName -Destination "$OUT/lib/" }
           Copy-Item -Recurse -Force lsquic/include/*    "$OUT/include/"
           Copy-Item -Recurse -Force boringssl/include/* "$OUT/include/"
           "lsquic: ${{ matrix.name }}`r`nboringssl: ${{ env.BORINGSSL_REF }}" | Out-File -Encoding utf8 "$OUT/VERSION.txt"
