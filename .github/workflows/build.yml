@@ -80,8 +80,10 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd boringssl
-          cmake -DCMAKE_BUILD_TYPE=Release -B build
+          # 同一 build 目录可多配置（VS 生成器是 multi-config）；Release + Debug 都编
+          cmake -B build
           cmake --build build --config Release --parallel -- /m
+          cmake --build build --config Debug   --parallel -- /m
 
       # ----- 整理 BoringSSL 产物到 lsquic 期望的布局 (LIBSSL_DIR/lib + LIBSSL_DIR/include) -----
       # 新版 BoringSSL 库可能落在 build/ 顶层或 build/ssl|crypto/ 或 build/Release/，统一收到 lib/。
@@ -100,10 +102,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path boringssl/lib | Out-Null
-          Get-ChildItem -Recurse -Path boringssl/build -Filter ssl.lib    | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/
-          Get-ChildItem -Recurse -Path boringssl/build -Filter crypto.lib | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/
-          Get-ChildItem boringssl/lib
+          # Release + Debug 分别整理到 lib/Release 与 lib/Debug（lsquic 用 LIBSSL_DIR 搜 PATH_SUFFIXES Release/Debug）
+          New-Item -ItemType Directory -Force -Path boringssl/lib/Release,boringssl/lib/Debug | Out-Null
+          # MSVC multi-config 产物在 build/<sub>/Release 和 build/<sub>/Debug
+          Get-ChildItem -Recurse -Path boringssl/build -Filter ssl.lib    | Where-Object { $_.FullName -match '\\Release\\' } | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/Release/
+          Get-ChildItem -Recurse -Path boringssl/build -Filter crypto.lib | Where-Object { $_.FullName -match '\\Release\\' } | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/Release/
+          Get-ChildItem -Recurse -Path boringssl/build -Filter ssl.lib    | Where-Object { $_.FullName -match '\\Debug\\' }   | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/Debug/
+          Get-ChildItem -Recurse -Path boringssl/build -Filter crypto.lib | Where-Object { $_.FullName -match '\\Debug\\' }   | Select-Object -First 1 | Copy-Item -Destination boringssl/lib/Debug/
+          Get-ChildItem -Recurse boringssl/lib
 
       # ----- 编 lsquic，指向整理后的 BoringSSL；强制 BoringSSL 以跳过静态库符号检测 -----
       - name: Build lsquic (Unix)
@@ -125,15 +131,26 @@ jobs:
           # lsquic 在 Windows 硬编码 /WX(warning-as-error)，新版 MSVC 的 C5286(enum 隐式转换)
           # 会把告警当错误。用 EXTRA_CFLAGS 追加 /WX- 关掉（CMakeLists 把 EXTRA_CFLAGS 拼在 -WX 之后）。
           $env:EXTRA_CFLAGS = "/WX- /wd5286"
-          cmake -DCMAKE_BUILD_TYPE=Release -DLSQUIC_SHARED_LIB=OFF `
-                -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
+          # lsquic 通过 LIBSSL_DIR 的 FIND_LIBRARY 定位 boringssl 库，结果在 configure 时固定，
+          # 不随 --config 变；故 Release/Debug 各 configure 到独立 build 目录，分别指向对应 boringssl 子目录。
+          # ---- Release ----
+          cmake -DLSQUIC_SHARED_LIB=OFF -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
                 -DLSQUIC_LIBSSL=BORINGSSL `
                 -DBORINGSSL_INCLUDE="$env:GITHUB_WORKSPACE/boringssl/include" `
-                -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl" `
+                -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl/lib/Release" `
                 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
                 -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-                -B build
-          cmake --build build --config Release --parallel -- /m
+                -B build-release
+          cmake --build build-release --config Release --parallel -- /m
+          # ---- Debug ----
+          cmake -DLSQUIC_SHARED_LIB=OFF -DLSQUIC_BIN=OFF -DLSQUIC_TESTS=OFF `
+                -DLSQUIC_LIBSSL=BORINGSSL `
+                -DBORINGSSL_INCLUDE="$env:GITHUB_WORKSPACE/boringssl/include" `
+                -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl/lib/Debug" `
+                -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                -B build-debug
+          cmake --build build-debug --config Debug --parallel -- /m
 
       # ----- 收集产物：库 + 头文件 -----
       - name: Collect artifacts (Unix)
@@ -164,16 +181,28 @@ jobs:
         shell: pwsh
         run: |
           $OUT = "out/lsquic-${{ matrix.name }}"
-          New-Item -ItemType Directory -Force -Path "$OUT/lib","$OUT/include" | Out-Null
-          Get-ChildItem -Recurse -Path lsquic/build    -Filter lsquic.lib | Copy-Item -Destination "$OUT/lib/"
-          Get-ChildItem -Recurse -Path boringssl/build  -Filter ssl.lib    | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
-          Get-ChildItem -Recurse -Path boringssl/build  -Filter crypto.lib | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/"
-          # zlib (vcpkg static)，主项目链接 lsquic 需要
-          $zlib = Get-ChildItem -Recurse -Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/lib" -Filter zlib.lib -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($zlib) { Copy-Item -Path $zlib.FullName -Destination "$OUT/lib/" }
+          New-Item -ItemType Directory -Force -Path "$OUT/lib/Release","$OUT/lib/Debug","$OUT/include" | Out-Null
+
+          # ----- Release 库 -----
+          Get-ChildItem -Recurse -Path lsquic/build-release -Filter lsquic.lib | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/Release/"
+          Copy-Item boringssl/lib/Release/ssl.lib    "$OUT/lib/Release/"
+          Copy-Item boringssl/lib/Release/crypto.lib "$OUT/lib/Release/"
+          $zlibR = Get-ChildItem -Recurse -Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/lib" -Filter zlib.lib -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($zlibR) { Copy-Item $zlibR.FullName "$OUT/lib/Release/" }
+
+          # ----- Debug 库 -----
+          Get-ChildItem -Recurse -Path lsquic/build-debug -Filter lsquic.lib | Select-Object -First 1 | Copy-Item -Destination "$OUT/lib/Debug/"
+          Copy-Item boringssl/lib/Debug/ssl.lib    "$OUT/lib/Debug/"
+          Copy-Item boringssl/lib/Debug/crypto.lib "$OUT/lib/Debug/"
+          # vcpkg static debug zlib 名为 zlibd.lib，位于 debug/lib
+          $zlibD = Get-ChildItem -Recurse -Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/debug/lib" -Filter zlibd.lib -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($zlibD) { Copy-Item $zlibD.FullName "$OUT/lib/Debug/" }
+
+          # ----- 头文件（Release/Debug 共用）-----
           Copy-Item -Recurse -Force lsquic/include/*    "$OUT/include/"
           Copy-Item -Recurse -Force boringssl/include/* "$OUT/include/"
-          "lsquic: ${{ matrix.name }}`r`nboringssl: ${{ env.BORINGSSL_REF }}" | Out-File -Encoding utf8 "$OUT/VERSION.txt"
+          "lsquic: ${{ matrix.name }}`r`nboringssl: ${{ env.BORINGSSL_REF }}`r`nconfigs: Release, Debug" | Out-File -Encoding utf8 "$OUT/VERSION.txt"
+          Get-ChildItem -Recurse "$OUT/lib"
           Compress-Archive -Path "$OUT" -DestinationPath "out/lsquic-${{ matrix.name }}.zip" -Force
 
       - name: Upload artifact
