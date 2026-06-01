@@ -80,8 +80,10 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd boringssl
-          # 同一 build 目录可多配置（VS 生成器是 multi-config）；Release + Debug 都编
-          cmake -B build
+          # 静态 CRT(/MT, /MTd) 以匹配 HookMFC 工程（MT_Static*）。CMP0091=NEW 让该变量生效。
+          cmake -B build `
+                -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+                "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`$<`$<CONFIG:Debug>:Debug>"
           cmake --build build --config Release --parallel -- /m
           cmake --build build --config Debug   --parallel -- /m
 
@@ -131,6 +133,9 @@ jobs:
           # lsquic 在 Windows 硬编码 /WX(warning-as-error)，新版 MSVC 的 C5286(enum 隐式转换)
           # 会把告警当错误。用 EXTRA_CFLAGS 追加 /WX- 关掉（CMakeLists 把 EXTRA_CFLAGS 拼在 -WX 之后）。
           $env:EXTRA_CFLAGS = "/WX- /wd5286"
+          # 静态 CRT(/MT, /MTd) 以匹配 HookMFC 工程
+          $rt = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW"
+          $rtlib = "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`$<`$<CONFIG:Debug>:Debug>"
           # lsquic 通过 LIBSSL_DIR 的 FIND_LIBRARY 定位 boringssl 库，结果在 configure 时固定，
           # 不随 --config 变；故 Release/Debug 各 configure 到独立 build 目录，分别指向对应 boringssl 子目录。
           # ---- Release ----
@@ -140,6 +145,7 @@ jobs:
                 -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl/lib/Release" `
                 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
                 -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                $rt $rtlib `
                 -B build-release
           cmake --build build-release --config Release --parallel -- /m
           # ---- Debug ----
@@ -149,6 +155,7 @@ jobs:
                 -DLIBSSL_DIR="$env:GITHUB_WORKSPACE/boringssl/lib/Debug" `
                 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
                 -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+                $rt $rtlib `
                 -B build-debug
           cmake --build build-debug --config Debug --parallel -- /m
 
