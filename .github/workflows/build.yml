@@ -23,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04       # glibc 2.35，无 __isoc23 符号，向前兼容旧 glibc
             name: linux-x64
           - os: macos-14          # Apple Silicon
             name: macos-arm64
