@@ -19,12 +19,16 @@ jobs:
   build:
     name: build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    # Linux 需要在与 GameServer 一致的 glibc 环境中编译，避免 __isoc23_strtol 等新版符号。
+    # 主项目 GameServer CI 使用 debian:buster-slim 容器（glibc 2.28）；这里对齐。
+    container: ${{ matrix.container || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             name: linux-x64
+            container: debian:buster-slim
           - os: macos-14          # Apple Silicon
             name: macos-arm64
           - os: windows-latest
@@ -41,14 +45,24 @@ jobs:
         with:
           go-version: 'stable'
 
-      # ----- Unix 前置：确保 ninja 可用（mac/Linux runner 一般已预装）-----
-      - name: Ensure Ninja (Unix)
+      # ----- Unix 前置：安装编译工具（bollinger gcc/cmake/ninja/go；debian buster 需切 archive）-----
+      - name: Install Unix build prerequisites
         if: runner.os != 'Windows'
         run: |
-          if ! command -v ninja >/dev/null 2>&1; then
-            if [ "$(uname -s)" = "Darwin" ]; then brew install ninja; else sudo apt-get update && sudo apt-get install -y ninja-build; fi
+          # debian buster 已 EOL，源已移到 archive.debian.org
+          if grep -q buster /etc/os-release 2>/dev/null || grep -q buster /etc/apt/sources.list 2>/dev/null; then
+            sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list
+            sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list
           fi
-          ninja --version
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update; apt-get install -y --no-install-recommends \
+              g++ make cmake ninja-build golang git ca-certificates zlib1g-dev
+          elif command -v brew >/dev/null 2>&1; then
+            command -v ninja >/dev/null 2>&1 || brew install ninja
+            command -v cmake >/dev/null 2>&1 || brew install cmake
+            command -v go   >/dev/null 2>&1 || brew install go
+          fi
+          cmake --version; ninja --version; go version
 
       # ----- Windows 专用前置：NASM（boringssl 汇编）+ Perl + zlib（lsquic 依赖）-----
       - name: Install Windows build prerequisites
